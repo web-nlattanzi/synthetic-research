@@ -39,10 +39,23 @@ class Question(BaseModel):
     prompt: Optional[str] = None
 
 class CreateRun(BaseModel):
-    research_type: str = Field(pattern="^(quant|qual|creative)$")
-    segment_text: str
-    questions: List[Question]
-    n_respondents: int = Field(ge=1, le=500)
+    """Input payload for starting a research run.
+
+    Previously all fields were required which meant that any missing value
+    resulted in FastAPI returning a ``422 Unprocessable Entity`` error before
+    the request handler executed.  This made the API brittle for clients that
+    might omit optional information such as audience description or questions.
+
+    By providing sensible defaults we allow the endpoint to accept a minimal
+    payload and still operate (e.g. generating a spreadsheet with only
+    ``respondent_id`` when no questions are supplied).  This keeps the API
+    responsive instead of failing with a validation error.
+    """
+
+    research_type: str = Field("qual", pattern="^(quant|qual|creative)$")
+    segment_text: str = ""
+    questions: List[Question] = Field(default_factory=list)
+    n_respondents: int = Field(25, ge=1, le=500)
 
 # ---------- LLM helpers ----------
 def _questions_schema_for_prompt(questions: List[Question]) -> str:
