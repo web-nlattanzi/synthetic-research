@@ -1,39 +1,47 @@
 import { useState } from "react";
 
-// Reusable Box component
-const boxStyle = {
-  border: "1px solid #ddd",
-  borderRadius: 12,
-  padding: 16,
-  marginTop: 12,
-  background: "#fff",
-};
+/* ---------- Simple Box wrapper ---------- */
+const boxStyle = { border: "1px solid #ddd", borderRadius: 12, padding: 16, marginTop: 12, background: "#fff" };
 function Box({ children }) {
   return <div style={boxStyle}>{children}</div>;
 }
 
+/* ============================================================================== */
+/*                           Synthetic Research Frontend                           */
+/* ============================================================================== */
 export default function App() {
-  // Tabs
+  /* Tabs */
   const [activeTab, setActiveTab] = useState("audience"); // audience | questions | run
 
-  // Core state
+  /* Core inputs */
   const [apiUrl, setApiUrl] = useState("");
-  const [researchType, setResearchType] = useState("quant"); // quant | qual
-  const [nRespondents, setNRespondents] = useState(25);
+  const [researchType, setResearchType] = useState("qual"); // "qual" or "quant"
+  const [nRespondents, setNRespondents] = useState(10);
+
+  /* Audience: freeform + builder */
+  const [audMode, setAudMode] = useState("freeform"); // "freeform" | "builder"
   const [audienceDescription, setAudienceDescription] = useState("");
-  const [questions, setQuestions] = useState("");
 
-  const [runId, setRunId] = useState(null);
-  const [status, setStatus] = useState(null);
-
-  // Audience Builder
-  const [audMode, setAudMode] = useState("freeform");
   const [age, setAge] = useState("");
   const [gender, setGender] = useState("");
   const [location, setLocation] = useState("");
   const [income, setIncome] = useState("");
   const [behavior, setBehavior] = useState("");
   const [attitudes, setAttitudes] = useState("");
+
+  /* Questions */
+  const [questionsText, setQuestionsText] = useState(
+    "What motivates you to choose one coffee brand over another?\nDescribe your ideal coffee experience."
+  );
+
+  /* Run state */
+  const [runId, setRunId] = useState(null);
+  const [runStatus, setRunStatus] = useState(null); // queued | running | succeeded | failed | error(...)
+  const [downloadUrl, setDownloadUrl] = useState(null);
+  const [lastError, setLastError] = useState("");
+
+  /* Helpers */
+  const baseUrl = () => apiUrl.replace(/\/$/, "");
 
   const applyBuilderToDescription = () => {
     const bullets = [];
@@ -46,61 +54,99 @@ export default function App() {
     setAudienceDescription(bullets.join("\n"));
   };
 
-  const handleSubmit = async () => {
-    const base = apiUrl.replace(/\/$/, "");
-    if (!base) {
-      alert("Please set the API URL first.");
-      return;
-    }
-    if (!audienceDescription.trim()) {
-      alert("Please add an audience description.");
-      return;
-    }
-    if (!questions.trim()) {
-      alert("Please add at least one question.");
-      return;
-    }
+  const parseQuestions = () =>
+    questionsText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  /* ---------------------------- Backend Calls ---------------------------- */
+  async function createRun() {
+    setLastError("");
+    const base = baseUrl();
+    if (!base) return alert("Please paste your backend API URL (no trailing slash).");
+    if (!audienceDescription.trim()) return alert("Please provide an audience description.");
+    const qs = parseQuestions();
+    if (qs.length === 0) return alert("Please provide at least one question.");
+    const n = Number(nRespondents || 1);
+    if (isNaN(n) || n < 1) return alert("Respondents must be a positive number.");
+
+    setRunId(null);
+    setRunStatus("queued");
+    setDownloadUrl(null);
 
     try {
-      setStatus("running");
-      const response = await fetch(`${base}/api/runs/`, {
+      const res = await fetch(`${base}/api/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          audience: audienceDescription,
-          questions: questions.split("\n").map((s) => s.trim()).filter(Boolean),
-          research_type: researchType,
-          n_respondents: Number(nRespondents || 25),
+          audience: audienceDescription,      // <-- matches backend
+          research_type: researchType,        // <-- matches backend
+          questions: qs,                      // <-- array of strings
+          n_respondents: n                    // <-- number
         }),
       });
 
-      if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        setStatus(`error (${response.status})`);
-        alert(`Create run failed: ${response.status}\n${errText || "See backend logs."}`);
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        setRunStatus(`error (${res.status})`);
+        setLastError(t || "Create run failed.");
+        alert(`Create run failed: ${res.status}\n${t || "See backend logs for details."}`);
         return;
       }
 
-      const data = await response.json();
-      setRunId(data.run_id);
-      setStatus("succeeded");
-    } catch (err) {
-      setStatus("error");
-      alert("Request failed: " + err.message);
+      const j = await res.json();
+      setRunId(j.run_id);
+      setRunStatus("running");
+      setActiveTab("run");
+      pollStatus(j.run_id);
+    } catch (e) {
+      setRunStatus("error (network)");
+      setLastError(String(e));
+      alert("Network error creating run. Check API URL / Port 8000 visibility.");
     }
-  };
+  }
 
+  function pollStatus(id) {
+    const base = baseUrl();
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch(`${base}/api/runs/${id}`);
+        if (!r.ok) {
+          if (r.status === 404) {
+            setRunStatus("error (not found)");
+            clearInterval(timer);
+          }
+          return;
+        }
+        const j = await r.json();
+        setRunStatus(j.status);
+        if (j.status === "succeeded" && j.download_url) {
+          setDownloadUrl(`${base}${j.download_url}`);
+          clearInterval(timer);
+        } else if (j.status === "failed") {
+          setLastError(j.message || "Background job failed.");
+          clearInterval(timer);
+        }
+      } catch {
+        setRunStatus("error (poll)");
+        clearInterval(timer);
+      }
+    }, 1000);
+  }
+
+  /* ---------------------------------- UI --------------------------------- */
   return (
     <div
       style={{
         fontFamily: "Inter, system-ui, Arial, sans-serif",
         minHeight: "100vh",
-        backgroundColor: "#f5f6f7",
+        background: "#f5f6f7",
         padding: 20,
         color: "#111",
       }}
     >
-      {/* Centered content */}
+      {/* horizontally centered container */}
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <h1 style={{ textAlign: "center" }}>Synthetic Research Tool</h1>
 
@@ -125,7 +171,7 @@ export default function App() {
           ))}
         </div>
 
-        {/* --- Define Audience --- */}
+        {/* Define Audience */}
         {activeTab === "audience" && (
           <>
             <Box>
@@ -134,7 +180,7 @@ export default function App() {
                 style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
                 value={apiUrl}
                 onChange={(e) => setApiUrl(e.target.value)}
-                placeholder="https://xxxx-8000.app.github.dev (no trailing slash)"
+                placeholder="https://<hash>-8000.app.github.dev (no trailing slash)"
               />
             </Box>
 
@@ -173,7 +219,7 @@ export default function App() {
                   style={{ width: "100%", minHeight: 160, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
                   value={audienceDescription}
                   onChange={(e) => setAudienceDescription(e.target.value)}
-                  placeholder="Describe your audience..."
+                  placeholder="Describe your audience… (bullets work great)"
                 />
               ) : (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -189,7 +235,11 @@ export default function App() {
                   </div>
                   <div>
                     <h3>Preview</h3>
-                    <textarea style={{ width: "100%", minHeight: 160, padding: 8 }} value={audienceDescription} onChange={(e) => setAudienceDescription(e.target.value)} />
+                    <textarea
+                      style={{ width: "100%", minHeight: 160, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+                      value={audienceDescription}
+                      onChange={(e) => setAudienceDescription(e.target.value)}
+                    />
                   </div>
                 </div>
               )}
@@ -198,18 +248,18 @@ export default function App() {
             <Box>
               <h3>Research Settings</h3>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div style={{ textAlign: "left" }}>
+                <div>
                   <label><strong>Research Type</strong></label>
                   <select
                     style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
                     value={researchType}
                     onChange={(e) => setResearchType(e.target.value)}
                   >
-                    <option value="quant">Quant (Excel + summary)</option>
                     <option value="qual">Qual (verbatims + themes)</option>
+                    <option value="quant">Quant (Excel + summary)</option>
                   </select>
                 </div>
-                <div style={{ textAlign: "left" }}>
+                <div>
                   <label><strong>Number of Respondents</strong></label>
                   <input
                     type="number"
@@ -217,7 +267,6 @@ export default function App() {
                     style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
                     value={nRespondents}
                     onChange={(e) => setNRespondents(Math.max(1, Number(e.target.value || 1)))}
-                    placeholder="e.g., 25"
                   />
                 </div>
               </div>
@@ -225,45 +274,54 @@ export default function App() {
           </>
         )}
 
-        {/* --- Input Questions --- */}
+        {/* Input Questions */}
         {activeTab === "questions" && (
           <Box>
             <h3>Input Questions</h3>
             <textarea
               style={{ width: "100%", minHeight: 200, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
-              value={questions}
-              onChange={(e) => setQuestions(e.target.value)}
+              value={questionsText}
+              onChange={(e) => setQuestionsText(e.target.value)}
               placeholder={
                 researchType === "qual"
-                  ? "Enter one open-ended question per line..."
-                  : "Paste survey logic or enter one question per line."
+                  ? "Enter one open-ended question per line…"
+                  : "Paste survey logic or enter one question per line…"
               }
             />
           </Box>
         )}
 
-        {/* --- Run & Export --- */}
+        {/* Run & Export */}
         {activeTab === "run" && (
           <>
             <Box>
               <h3>Preview</h3>
               <p><strong>Audience</strong></p>
-              <pre style={{ background: "#f4f4f4", padding: 10 }}>{audienceDescription || "(none)"}</pre>
+              <pre style={{ background: "#f4f4f4", padding: 10, whiteSpace: "pre-wrap" }}>
+                {audienceDescription || "(none)"}
+              </pre>
               <p><strong>Questions</strong></p>
-              <pre style={{ background: "#f4f4f4", padding: 10 }}>{questions || "(none)"}</pre>
+              <pre style={{ background: "#f4f4f4", padding: 10, whiteSpace: "pre-wrap" }}>
+                {questionsText || "(none)"}
+              </pre>
               <p><strong>Research Type:</strong> {researchType}</p>
               <p><strong>Respondents:</strong> {nRespondents}</p>
+              <p><strong>Status:</strong> {runStatus || "(idle)"} {runId ? `(run_id: ${runId})` : ""}</p>
+              {lastError && <p style={{ color: "#b00020" }}><strong>Error:</strong> {lastError}</p>}
             </Box>
 
             <Box>
-              <button style={{ padding: "10px 20px", marginRight: 10 }} onClick={handleSubmit}>
-                Generate {status && `(status: ${status})`}
+              <button style={{ padding: "10px 20px", marginRight: 10 }} onClick={createRun}>
+                {runStatus ? `Generate (status: ${runStatus})` : "Generate"}
               </button>
-              {runId && status === "succeeded" && (
-                <a href={`${apiUrl.replace(/\/$/, "")}/api/runs/${runId}/download`} target="_blank" rel="noreferrer">
-                  <button style={{ padding: "10px 20px" }}>Download Results</button>
-                </a>
-              )}
+              <button
+                style={{ padding: "10px 20px", opacity: downloadUrl ? 1 : 0.6, cursor: downloadUrl ? "pointer" : "not-allowed" }}
+                disabled={!downloadUrl}
+                onClick={() => (window.location.href = downloadUrl)}
+                title={downloadUrl ? "Download Excel" : "Not ready yet"}
+              >
+                {downloadUrl ? "Download Results" : "Download Results (not ready)"}
+              </button>
             </Box>
           </>
         )}
