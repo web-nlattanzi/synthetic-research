@@ -1,378 +1,273 @@
 import { useState } from "react";
-import * as XLSX from "xlsx"; // npm i xlsx
 
-/* ---------- Stable Box (prevents focus loss) ---------- */
-const boxStyle = { border: "1px solid #ddd", borderRadius: 12, padding: 16, marginTop: 12 };
-function Box({ children }) { return <div style={boxStyle}>{children}</div>; }
+// Reusable Box component
+const boxStyle = {
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  padding: 16,
+  marginTop: 12,
+  background: "#fff",
+};
+function Box({ children }) {
+  return <div style={boxStyle}>{children}</div>;
+}
 
 export default function App() {
-  // Tabs: Define Audience | Input Questions | Run & Export
-  const [tab, setTab] = useState("define");
+  // Tabs
+  const [activeTab, setActiveTab] = useState("audience"); // audience | questions | run
 
-  // App config
-  const [apiUrl, setApiUrl] = useState((import.meta.env.VITE_API_URL || "").replace(/\/$/, ""));
-  const [researchType, setResearchType] = useState("qual"); // "qual" | "quant"
+  // Core state
+  const [apiUrl, setApiUrl] = useState("");
+  const [researchType, setResearchType] = useState("quant"); // quant | qual
   const [nRespondents, setNRespondents] = useState(25);
+  const [audienceDescription, setAudienceDescription] = useState("");
+  const [questions, setQuestions] = useState("");
 
-  // Audience
-  const [defineMode, setDefineMode] = useState("freeform"); // "freeform" | "template"
-  const [segment, setSegment] = useState("");
+  const [runId, setRunId] = useState(null);
+  const [status, setStatus] = useState(null);
 
-  // Template builder fields
+  // Audience Builder
+  const [audMode, setAudMode] = useState("freeform");
   const [age, setAge] = useState("");
   const [gender, setGender] = useState("");
   const [location, setLocation] = useState("");
   const [income, setIncome] = useState("");
   const [behavior, setBehavior] = useState("");
   const [attitudes, setAttitudes] = useState("");
-  const [templates, setTemplates] = useState([]); // {name, data:{...}}
-  const [newTemplateName, setNewTemplateName] = useState("");
-  const [selectedTemplate, setSelectedTemplate] = useState("");
 
-  // Questions
-  const [questionsText, setQuestionsText] = useState(
-    "Q1_appeal: Overall appeal? (Low/Med/High)\nQopen_react: React in 2-4 sentences; include 1 example. [open]"
-  );
-
-  // Run state
-  const [runStatus, setRunStatus] = useState(null);
-  const [downloadUrl, setDownloadUrl] = useState(null);
-  const [runId, setRunId] = useState(null);
-
-  /* ---------------- Audience helpers (Template Builder) ---------------- */
-  const buildAudience = (d) => {
-    const out = [];
-    if (d.age?.trim()) out.push(`• Age: ${d.age}`);
-    if (d.gender?.trim()) out.push(`• Gender: ${d.gender}`);
-    if (d.location?.trim()) out.push(`• Location: ${d.location}`);
-    if (d.income?.trim()) out.push(`• Income: ${d.income}`);
-    if (d.behavior?.trim()) out.push(`• Category Behavior: ${d.behavior}`);
-    if (d.attitudes?.trim()) out.push(`• Attitudes: ${d.attitudes}`);
-    return out.join("\n");
+  const applyBuilderToDescription = () => {
+    const bullets = [];
+    if (age.trim()) bullets.push(`• Age: ${age}`);
+    if (gender.trim()) bullets.push(`• Gender: ${gender}`);
+    if (location.trim()) bullets.push(`• Location: ${location}`);
+    if (income.trim()) bullets.push(`• Income: ${income}`);
+    if (behavior.trim()) bullets.push(`• Category behavior: ${behavior}`);
+    if (attitudes.trim()) bullets.push(`• Attitudes: ${attitudes}`);
+    setAudienceDescription(bullets.join("\n"));
   };
 
-  const applyCurrentInputs = () =>
-    setSegment(buildAudience({ age, gender, location, income, behavior, attitudes }));
-
-  const saveTemplate = () => {
-    if (!newTemplateName.trim()) return;
-    const payload = { name: newTemplateName.trim(), data: { age, gender, location, income, behavior, attitudes } };
-    const exists = templates.some(t => t.name.toLowerCase() === payload.name.toLowerCase());
-    setTemplates(prev =>
-      exists
-        ? prev.map(t => (t.name.toLowerCase() === payload.name.toLowerCase() ? payload : t))
-        : [...prev, payload]
-    );
-    setSelectedTemplate(payload.name);
-  };
-
-  const loadSelectedTemplate = () => {
-    const tpl = templates.find(t => t.name === selectedTemplate);
-    if (!tpl) return;
-    setAge(tpl.data.age || ""); setGender(tpl.data.gender || ""); setLocation(tpl.data.location || "");
-    setIncome(tpl.data.income || ""); setBehavior(tpl.data.behavior || ""); setAttitudes(tpl.data.attitudes || "");
-    setSegment(buildAudience(tpl.data));
-  };
-
-  const deleteTemplate = () => {
-    if (!selectedTemplate) return;
-    setTemplates(prev => prev.filter(t => t.name !== selectedTemplate));
-    setSelectedTemplate("");
-  };
-
-  /* -------------------------- File upload helpers -------------------------- */
-  function appendQuestions(newLines) {
-    const current = questionsText ? questionsText.trim() + "\n" : "";
-    setQuestionsText(current + newLines.join("\n"));
-  }
-
-  async function handleFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const ext = file.name.toLowerCase().split(".").pop();
-
-    if (ext === "txt" || ext === "csv") {
-      const text = await file.text();
-      appendQuestions(text.split(/\r?\n/).map(l => l.trim()).filter(Boolean));
+  const handleSubmit = async () => {
+    const base = apiUrl.replace(/\/$/, "");
+    if (!base) {
+      alert("Please set the API URL first.");
+      return;
+    }
+    if (!audienceDescription.trim()) {
+      alert("Please add an audience description.");
+      return;
+    }
+    if (!questions.trim()) {
+      alert("Please add at least one question.");
       return;
     }
 
-    if (ext === "xlsx" || ext === "xls") {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf);
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { header: 1 }); // array of arrays
-
-      // Expect columns like: id | prompt | options | type (best-effort)
-      const lines = [];
-      for (let i = 1; i < rows.length; i++) {
-        const [idRaw, promptRaw, optionsRaw, typeRaw] = rows[i];
-        const id = String(idRaw || "").trim();
-        const prompt = String(promptRaw || "").trim();
-        const type = String(typeRaw || "").trim().toLowerCase();
-        const opts = String(optionsRaw || "").trim();
-        if (!id && !prompt) continue;
-
-        if (type === "open" || /\[open\]/i.test(prompt) || /open/i.test(id)) {
-          lines.push(`${id || `Q${i}`}: ${prompt} [open]`);
-        } else if (opts) {
-          const paren = `(${opts.split(/[|/,;]/).map(s => s.trim()).filter(Boolean).join("/")})`;
-          lines.push(`${id || `Q${i}`}: ${prompt} ${paren}`);
-        } else {
-          lines.push(`${id || `Q${i}`}: ${prompt}`);
-        }
-      }
-      appendQuestions(lines);
-      return;
-    }
-
-    alert("Supported uploads: .txt, .csv, .xlsx");
-  }
-
-  /* -------------------------- Parsing for backend -------------------------- */
-  // Qual: each line = open-end.
-  // Quant: parse options in ( ), allow [multi] for multi-select, keep logic notes in prompt text.
-  function parseQuestions() {
-    const lines = questionsText.split("\n").map(l => l.trim()).filter(Boolean);
-    if (researchType === "qual") {
-      return lines.map((line, idx) => ({
-        q: line.split(":")[0]?.trim() || `Qopen_${idx + 1}`,
-        type: "open",
-        prompt: line
-      }));
-    }
-    // quant
-    return lines.map(line => {
-      const id = line.split(":")[0]?.trim() || "Q";
-      const isOpen = /\[open\]/i.test(line);
-      if (isOpen) return { q: id, type: "open", prompt: line };
-      const multi = /\[multi\]/i.test(line);
-      const m = line.match(/\(([^)]+)\)/);
-      const opts = m ? m[1].split(/[\/,|]/).map(s => s.trim()).filter(Boolean) : ["Yes", "No"];
-      return { q: id, type: multi ? "multi" : "single", options: opts, prompt: line };
-    });
-  }
-
-  /* ------------------------------ Backend calls ---------------------------- */
-  async function createRun() {
-    if (!apiUrl) { alert("Paste your backend API URL (port 8000, no trailing slash)."); return; }
-    setRunStatus("queued"); setDownloadUrl(null); setRunId(null);
-
-    const body = {
-      research_type: researchType,
-      segment_text: segment,
-      questions: parseQuestions(),
-      n_respondents: Number(nRespondents || 25),
-    };
-
-    let res;
     try {
-      res = await fetch(`${apiUrl}/api/runs`, {
+      setStatus("running");
+      const response = await fetch(`${base}/api/runs/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          audience: audienceDescription,
+          questions: questions.split("\n").map((s) => s.trim()).filter(Boolean),
+          research_type: researchType,
+          n_respondents: Number(nRespondents || 25),
+        }),
       });
-    } catch {
-      setRunStatus("error (network)");
-      alert("Network error creating run. Check API URL and that port 8000 is Public.");
-      return;
-    }
 
-    if (!res.ok) {
-      const text = await res.text();
-      setRunStatus(`error (${res.status})`);
-      alert(`Create run failed: ${res.status}\n${text}`);
-      return;
-    }
-
-    const j = await res.json();
-    if (!j.run_id) { setRunStatus("error (no run_id)"); alert("Create run failed: no run_id returned."); return; }
-    setRunId(j.run_id);
-    poll(j.run_id);
-  }
-
-  function poll(id) {
-    const timer = setInterval(async () => {
-      try {
-        const r = await fetch(`${apiUrl}/api/runs/${id}`);
-        if (!r.ok) { if (r.status === 404) { setRunStatus("error (not found)"); clearInterval(timer); } return; }
-        const j = await r.json();
-        setRunStatus(j.status);
-        if (j.status === "succeeded" && j.download_url) {
-          clearInterval(timer);
-          setDownloadUrl(`${apiUrl}${j.download_url}`);
-        }
-        if (j.status === "failed") clearInterval(timer);
-      } catch {
-        setRunStatus("error (network)"); clearInterval(timer);
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        setStatus(`error (${response.status})`);
+        alert(`Create run failed: ${response.status}\n${errText || "See backend logs."}`);
+        return;
       }
-    }, 1000);
-  }
 
-  /* ------------------------------------ UI --------------------------------- */
-  const TabBtn = ({ id, label }) => (
-    <button
-      onClick={() => setTab(id)}
-      style={{
-        padding: "8px 12px",
-        borderRadius: 8,
-        border: "1px solid #ddd",
-        background: tab === id ? "#111" : "#fff",
-        color: tab === id ? "#fff" : "#111",
-        cursor: "pointer",
-      }}
-    >
-      {label}
-    </button>
-  );
-
-  const inputStyle = { padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" };
-  const textareaLight = { width: "100%", minHeight: 120, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" };
-  const preStyle = { background: "#f6f6f6", padding: 12, borderRadius: 8, overflow: "auto", color: "#111" };
+      const data = await response.json();
+      setRunId(data.run_id);
+      setStatus("succeeded");
+    } catch (err) {
+      setStatus("error");
+      alert("Request failed: " + err.message);
+    }
+  };
 
   return (
-    <div style={{ maxWidth: 1100, margin: "32px auto", fontFamily: "Inter, system-ui, Arial, sans-serif", color: "#111" }}>
-      <h1>Synthetic Research Tool</h1>
-      <p style={{ color: "#555" }}>Define an audience, input questions, generate synthetic responses, download Excel.</p>
+    <div
+      style={{
+        fontFamily: "Inter, system-ui, Arial, sans-serif",
+        minHeight: "100vh",
+        backgroundColor: "#f5f6f7",
+        padding: 20,
+        color: "#111",
+      }}
+    >
+      {/* Centered content */}
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <h1 style={{ textAlign: "center" }}>Synthetic Research Tool</h1>
 
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-        <TabBtn id="define" label="1. Define Audience" />
-        <TabBtn id="questions" label="2. Input Questions" />
-        <TabBtn id="run" label="3. Run & Export" />
-      </div>
-
-      {/* Define Audience */}
-      {tab === "define" && (
-        <Box>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        {/* Tabs */}
+        <div style={{ display: "flex", marginBottom: 20, borderBottom: "2px solid #ddd" }}>
+          {["audience", "questions", "run"].map((tab) => (
             <button
-              onClick={() => setDefineMode("freeform")}
-              style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #ddd",
-                background: defineMode === "freeform" ? "#111" : "#fff", color: defineMode === "freeform" ? "#fff" : "#111" }}>
-              Freeform
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                flex: 1,
+                padding: "10px",
+                border: "none",
+                background: activeTab === tab ? "#fff" : "#eee",
+                borderBottom: activeTab === tab ? "2px solid #000" : "none",
+                cursor: "pointer",
+                fontWeight: activeTab === tab ? "bold" : "normal",
+              }}
+            >
+              {tab === "audience" ? "Define Audience" : tab === "questions" ? "Input Questions" : "Run & Export"}
             </button>
-            <button
-              onClick={() => setDefineMode("template")}
-              style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #ddd",
-                background: defineMode === "template" ? "#111" : "#fff", color: defineMode === "template" ? "#fff" : "#111" }}>
-              Template Builder
-            </button>
-          </div>
+          ))}
+        </div>
 
-          {defineMode === "freeform" ? (
-            <>
-              <label><strong>Audience Description</strong></label>
-              <textarea
-                rows={12}
-                style={textareaLight}
-                placeholder={
-                  "Be specific. Bullets are great.\n" +
-                  "• Age: 25-44\n" +
-                  "• Location: US\n" +
-                  "• Category behavior: Drinks vodka monthly\n" +
-                  "• Attitudes: Values ambition; enjoys recognition"
-                }
-                value={segment}
-                onChange={(e) => setSegment(e.target.value)}
+        {/* --- Define Audience --- */}
+        {activeTab === "audience" && (
+          <>
+            <Box>
+              <h3>API URL</h3>
+              <input
+                style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+                value={apiUrl}
+                onChange={(e) => setApiUrl(e.target.value)}
+                placeholder="https://xxxx-8000.app.github.dev (no trailing slash)"
               />
-            </>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              <div>
-                <h3>Template Builder</h3>
-                <label>Age</label><input style={inputStyle} value={age} onChange={e=>setAge(e.target.value)} placeholder="e.g., 25-44" />
-                <label>Gender</label><input style={inputStyle} value={gender} onChange={e=>setGender(e.target.value)} placeholder="e.g., Mix of male and female" />
-                <label>Location</label><input style={inputStyle} value={location} onChange={e=>setLocation(e.target.value)} placeholder="e.g., US urban/suburban" />
-                <label>Income</label><input style={inputStyle} value={income} onChange={e=>setIncome(e.target.value)} placeholder="e.g., $50k-$100k HH income" />
-                <label>Category Behavior</label><input style={inputStyle} value={behavior} onChange={e=>setBehavior(e.target.value)} placeholder="e.g., Drinks vodka monthly" />
-                <label>Attitudes</label><input style={inputStyle} value={attitudes} onChange={e=>setAttitudes(e.target.value)} placeholder="e.g., Values ambition; enjoys recognition" />
+            </Box>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8 }}>
-                  {templates.length > 0 ? (
-                    <select style={inputStyle} value={selectedTemplate} onChange={e=>setSelectedTemplate(e.target.value)}>
-                      <option value="">Select a saved template</option>
-                      {templates.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
-                    </select>
-                  ) : <div style={{ padding: "8px 0", color: "#666" }}>No saved templates yet</div>}
-                  <button onClick={loadSelectedTemplate} disabled={!selectedTemplate}>Load Saved Template</button>
-                  <button onClick={applyCurrentInputs}>Apply Current Inputs</button>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8 }}>
-                  <input style={inputStyle} placeholder="Save as… (template name)" value={newTemplateName} onChange={e=>setNewTemplateName(e.target.value)} />
-                  <button onClick={saveTemplate}>Save Template</button>
-                  <button onClick={deleteTemplate} disabled={!selectedTemplate} style={{ color: "#b00020" }}>Delete Template</button>
-                </div>
+            <Box>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <button
+                  onClick={() => setAudMode("freeform")}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 8,
+                    border: "1px solid #ddd",
+                    background: audMode === "freeform" ? "#111" : "#fff",
+                    color: audMode === "freeform" ? "#fff" : "#111",
+                    cursor: "pointer",
+                  }}
+                >
+                  Freeform
+                </button>
+                <button
+                  onClick={() => setAudMode("builder")}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 8,
+                    border: "1px solid #ddd",
+                    background: audMode === "builder" ? "#111" : "#fff",
+                    color: audMode === "builder" ? "#fff" : "#111",
+                    cursor: "pointer",
+                  }}
+                >
+                  Audience Builder
+                </button>
               </div>
 
-              <div>
-                <h3>Audience Description Preview</h3>
-                <textarea rows={12} style={textareaLight} value={segment} onChange={e=>setSegment(e.target.value)} />
-                <small style={{ color: "#666" }}>Edits here update the Freeform text directly.</small>
+              {audMode === "freeform" ? (
+                <textarea
+                  style={{ width: "100%", minHeight: 160, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+                  value={audienceDescription}
+                  onChange={(e) => setAudienceDescription(e.target.value)}
+                  placeholder="Describe your audience..."
+                />
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <div>
+                    <h3>Builder</h3>
+                    <input placeholder="Age" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={age} onChange={(e) => setAge(e.target.value)} />
+                    <input placeholder="Gender" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={gender} onChange={(e) => setGender(e.target.value)} />
+                    <input placeholder="Location" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={location} onChange={(e) => setLocation(e.target.value)} />
+                    <input placeholder="Income" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={income} onChange={(e) => setIncome(e.target.value)} />
+                    <input placeholder="Category behavior" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={behavior} onChange={(e) => setBehavior(e.target.value)} />
+                    <input placeholder="Attitudes" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={attitudes} onChange={(e) => setAttitudes(e.target.value)} />
+                    <button onClick={applyBuilderToDescription}>Apply to Audience Description</button>
+                  </div>
+                  <div>
+                    <h3>Preview</h3>
+                    <textarea style={{ width: "100%", minHeight: 160, padding: 8 }} value={audienceDescription} onChange={(e) => setAudienceDescription(e.target.value)} />
+                  </div>
+                </div>
+              )}
+            </Box>
+
+            <Box>
+              <h3>Research Settings</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div style={{ textAlign: "left" }}>
+                  <label><strong>Research Type</strong></label>
+                  <select
+                    style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+                    value={researchType}
+                    onChange={(e) => setResearchType(e.target.value)}
+                  >
+                    <option value="quant">Quant (Excel + summary)</option>
+                    <option value="qual">Qual (verbatims + themes)</option>
+                  </select>
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <label><strong>Number of Respondents</strong></label>
+                  <input
+                    type="number"
+                    min={1}
+                    style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+                    value={nRespondents}
+                    onChange={(e) => setNRespondents(Math.max(1, Number(e.target.value || 1)))}
+                    placeholder="e.g., 25"
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            </Box>
+          </>
+        )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 8 }}>
-            <select style={inputStyle} value={researchType} onChange={(e) => setResearchType(e.target.value)}>
-              <option value="quant">Quantitative</option>
-              <option value="qual">Qualitative</option>
-            </select>
-            <input style={inputStyle} type="number" min={1} value={nRespondents} onChange={e => setNRespondents(Number(e.target.value))} placeholder="Respondents" />
-            <input style={inputStyle} value={apiUrl} onChange={e => setApiUrl(e.target.value.replace(/\/$/, ""))} placeholder="https://8000-...github.dev (no trailing /)" />
-          </div>
-        </Box>
-      )}
+        {/* --- Input Questions --- */}
+        {activeTab === "questions" && (
+          <Box>
+            <h3>Input Questions</h3>
+            <textarea
+              style={{ width: "100%", minHeight: 200, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+              value={questions}
+              onChange={(e) => setQuestions(e.target.value)}
+              placeholder={
+                researchType === "qual"
+                  ? "Enter one open-ended question per line..."
+                  : "Paste survey logic or enter one question per line."
+              }
+            />
+          </Box>
+        )}
 
-      {/* Input Questions */}
-      {tab === "questions" && (
-        <Box>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <label><strong>Input Questions</strong></label>
-            <input type="file" accept=".txt,.csv,.xlsx,.xls" onChange={handleFile} />
-          </div>
-          <textarea
-            rows={12}
-            style={{ width: "100%", marginTop: 8, ...textareaLight }}
-            value={questionsText}
-            onChange={(e) => setQuestionsText(e.target.value)}
-            placeholder={
-              researchType === "qual"
-                ? "One open-ended question per line."
-                : "Q1: Prompt (Option1/Option2/Option3)\nQ2: Prompt (Yes/No) [multi]\nIF Q1=Yes -> Ask Q2 (logic notes are okay)"
-            }
-          />
-          <small style={{ color: "#666" }}>
-            {researchType === "qual"
-              ? "All lines are treated as open ends."
-              : "Options in ( ); add [multi] for multi-select. Logic notes are preserved in prompt text."}
-          </small>
-        </Box>
-      )}
+        {/* --- Run & Export --- */}
+        {activeTab === "run" && (
+          <>
+            <Box>
+              <h3>Preview</h3>
+              <p><strong>Audience</strong></p>
+              <pre style={{ background: "#f4f4f4", padding: 10 }}>{audienceDescription || "(none)"}</pre>
+              <p><strong>Questions</strong></p>
+              <pre style={{ background: "#f4f4f4", padding: 10 }}>{questions || "(none)"}</pre>
+              <p><strong>Research Type:</strong> {researchType}</p>
+              <p><strong>Respondents:</strong> {nRespondents}</p>
+            </Box>
 
-      {/* Run & Export */}
-      {tab === "run" && (
-        <Box>
-          <p><strong>Audience</strong></p>
-          <pre style={preStyle}>{segment || "(none)"}</pre>
-          <p><strong>Questions</strong></p>
-          <pre style={preStyle}>{questionsText || "(none)"}</pre>
-          <p><strong>Respondents:</strong> {nRespondents} &nbsp;|&nbsp; <strong>Type:</strong> {researchType}</p>
-
-          <button onClick={createRun} style={{ width: "100%", padding: "10px", marginTop: 8 }}>
-            {runStatus ? `Generate (status: ${runStatus})` : "Generate Synthetic Responses"}
-          </button>
-          <button
-            disabled={!downloadUrl}
-            onClick={() => (window.location.href = downloadUrl)}
-            style={{ width: "100%", padding: "10px", marginTop: 8 }}
-          >
-            {downloadUrl ? "Download Excel" : "Download Excel (not ready)"}
-          </button>
-          {runId && <div style={{ marginTop: 8, color: "#666" }}>Run ID: {runId}</div>}
-        </Box>
-      )}
+            <Box>
+              <button style={{ padding: "10px 20px", marginRight: 10 }} onClick={handleSubmit}>
+                Generate {status && `(status: ${status})`}
+              </button>
+              {runId && status === "succeeded" && (
+                <a href={`${apiUrl.replace(/\/$/, "")}/api/runs/${runId}/download`} target="_blank" rel="noreferrer">
+                  <button style={{ padding: "10px 20px" }}>Download Results</button>
+                </a>
+              )}
+            </Box>
+          </>
+        )}
+      </div>
     </div>
   );
 }

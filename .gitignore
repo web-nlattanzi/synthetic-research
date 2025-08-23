@@ -1,0 +1,19 @@
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+
+# Python
+backend/.venv/
+__pycache__/
+
+# Local runs output
+backend/runs/
+
+# Environment files (never commit keys)
+.env
+backend/.env
+frontend/.env
+
+# OS/Editor
+.DS_Store
+.vscode/

@@ -1,0 +1,16 @@
+{
+  "name": "synthetic-research",
+  "forwardPorts": [8000, 5173],
+  "portsAttributes": {
+    "8000": { "label": "FastAPI", "onAutoForward": "notify" },
+    "5173": { "label": "Vite",  "onAutoForward": "notify" }
+  },
+  "secrets": {
+    "OPENAI_API_KEY": { "description": "OpenAI API key for backend" },
+    "OPENAI_MODEL":   { "description": "OpenAI model (optional)" }
+  },
+  "containerEnv": {
+    "OPENAI_API_KEY": "${secrets:OPENAI_API_KEY}",
+    "OPENAI_MODEL":   "${secrets:OPENAI_MODEL}"
+  }
+}
