@@ -7,10 +7,14 @@
   },
   "secrets": {
     "OPENAI_API_KEY": { "description": "OpenAI API key for backend" },
-    "OPENAI_MODEL":   { "description": "OpenAI model (optional)" }
+    "OPENAI_MODEL":   { "description": "OpenAI model (optional)" },
+    "SUPABASE_URL":   { "description": "Supabase project URL" },
+    "SUPABASE_KEY":   { "description": "Supabase anon public key" }
   },
   "containerEnv": {
     "OPENAI_API_KEY": "${secrets:OPENAI_API_KEY}",
-    "OPENAI_MODEL":   "${secrets:OPENAI_MODEL}"
+    "OPENAI_MODEL":   "${secrets:OPENAI_MODEL}",
+    "SUPABASE_URL":   "${secrets:SUPABASE_URL}",
+    "SUPABASE_KEY":   "${secrets:SUPABASE_KEY}"
   }
 }

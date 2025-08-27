@@ -2,15 +2,17 @@ import os, asyncio, json, re, random
 from io import BytesIO
 from typing import List, Optional
 from uuid import uuid4
+from datetime import datetime
 
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
-# Load env (OPENAI_API_KEY, OPENAI_MODEL)
+# Load env (OPENAI_API_KEY, OPENAI_MODEL, SUPABASE_URL, SUPABASE_KEY)
 load_dotenv()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
@@ -18,8 +20,13 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 from openai import OpenAI
 _client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ---------- In-memory store (MVP) ----------
-RUNS = {}  # run_id -> {"status": str, "excel_bytes": bytes|None}
+# Supabase client
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
+if not supabase_url or not supabase_key:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY environment variables are required")
+
+supabase: Client = create_client(supabase_url, supabase_key)
 
 # ---------- FastAPI & CORS ----------
 app = FastAPI()
@@ -33,25 +40,13 @@ app.add_middleware(
 
 # ---------- Schemas ----------
 class Question(BaseModel):
+    id: str
     q: str
     type: str = Field(pattern="^(single|multi|open)$")
     options: Optional[List[str]] = None
     prompt: Optional[str] = None
 
 class CreateRun(BaseModel):
-    """Input payload for starting a research run.
-
-    Previously all fields were required which meant that any missing value
-    resulted in FastAPI returning a ``422 Unprocessable Entity`` error before
-    the request handler executed.  This made the API brittle for clients that
-    might omit optional information such as audience description or questions.
-
-    By providing sensible defaults we allow the endpoint to accept a minimal
-    payload and still operate (e.g. generating a spreadsheet with only
-    ``respondent_id`` when no questions are supplied).  This keeps the API
-    responsive instead of failing with a validation error.
-    """
-
     research_type: str = Field("qual", pattern="^(quant|qual|creative)$")
     segment_text: str = ""
     questions: List[Question] = Field(default_factory=list)
@@ -161,33 +156,111 @@ def build_excel(df: pd.DataFrame, research_type: str) -> bytes:
     return buf.getvalue()
 
 async def run_job(run_id: str, payload: CreateRun):
-    RUNS[run_id] = {"status": "running", "excel_bytes": None}
-    batch = call_openai_generate(payload.research_type, payload.segment_text, payload.questions, payload.n_respondents)
-    df = llm_batch_to_dataframe(batch)
-    xlsx = build_excel(df, payload.research_type)
-    RUNS[run_id] = {"status": "succeeded", "excel_bytes": xlsx}
+    try:
+        # Update status to running
+        supabase.table("runs").update({
+            "status": "running"
+        }).eq("run_id", run_id).execute()
+        
+        # Generate synthetic data
+        batch = call_openai_generate(payload.research_type, payload.segment_text, payload.questions, payload.n_respondents)
+        df = llm_batch_to_dataframe(batch)
+        xlsx = build_excel(df, payload.research_type)
+        
+        # Upload to Supabase Storage
+        file_path = f"{run_id}.xlsx"
+        supabase.storage.from_("excel-exports").upload(file_path, xlsx, {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})
+        
+        # Get public URL
+        download_url = supabase.storage.from_("excel-exports").get_public_url(file_path)
+        
+        # Update status to succeeded
+        supabase.table("runs").update({
+            "status": "succeeded",
+            "download_url": download_url,
+            "completed_at": datetime.utcnow().isoformat()
+        }).eq("run_id", run_id).execute()
+        
+    except Exception as e:
+        # Update status to failed
+        supabase.table("runs").update({
+            "status": "failed",
+            "error_message": str(e),
+            "completed_at": datetime.utcnow().isoformat()
+        }).eq("run_id", run_id).execute()
 
 @app.post("/api/runs")
 async def create_run(payload: CreateRun):
     run_id = str(uuid4())
-    RUNS[run_id] = {"status": "queued", "excel_bytes": None}
+    
+    # Insert run into Supabase
+    run_data = {
+        "run_id": run_id,
+        "status": "queued",
+        "research_type": payload.research_type,
+        "n_respondents": payload.n_respondents,
+        "audience_description": payload.segment_text,
+        "questions_json": [q.dict() for q in payload.questions],
+        "created_at": datetime.utcnow().isoformat()
+    }
+    
+    result = supabase.table("runs").insert(run_data).execute()
+    
+    # Start background job
     asyncio.create_task(run_job(run_id, payload))
+    
     return {"run_id": run_id, "status": "queued", "download_url": f"/api/runs/{run_id}/download"}
 
 @app.get("/api/runs/{run_id}")
 async def run_status(run_id: str):
-    run = RUNS.get(run_id)
-    if not run: return {"error": "not_found"}
-    return {"run_id": run_id, "status": run["status"],
-            "download_url": f"/api/runs/{run_id}/download" if run["status"] == "succeeded" else None}
+    result = supabase.table("runs").select("*").eq("run_id", run_id).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    run = result.data[0]
+    return {
+        "run_id": run_id,
+        "status": run["status"],
+        "download_url": f"/api/runs/{run_id}/download" if run["status"] == "succeeded" else None,
+        "error_message": run.get("error_message"),
+        "created_at": run["created_at"],
+        "completed_at": run.get("completed_at")
+    }
 
 @app.get("/api/runs/{run_id}/download")
 async def run_download(run_id: str):
-    run = RUNS.get(run_id)
-    if not run or run["status"] != "succeeded" or not run["excel_bytes"]:
-        return {"error": "not_ready"}
-    return StreamingResponse(
-        BytesIO(run["excel_bytes"]),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{run_id}.xlsx"'}
-    )
+    result = supabase.table("runs").select("*").eq("run_id", run_id).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    run = result.data[0]
+    
+    if run["status"] != "succeeded" or not run.get("download_url"):
+        raise HTTPException(status_code=400, detail="Download not ready")
+    
+    # Redirect to Supabase Storage URL
+    return RedirectResponse(url=run["download_url"])
+
+@app.get("/api/runs/{run_id}/preview")
+async def run_preview(run_id: str):
+    """Get a preview of the run data for visualization"""
+    result = supabase.table("runs").select("*").eq("run_id", run_id).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    run = result.data[0]
+    
+    if run["status"] != "succeeded":
+        raise HTTPException(status_code=400, detail="Run not completed")
+    
+    # For now, return basic run info - could be enhanced to parse Excel data
+    return {
+        "run_id": run_id,
+        "research_type": run["research_type"],
+        "n_respondents": run["n_respondents"],
+        "questions": run["questions_json"],
+        "status": run["status"]
+    }

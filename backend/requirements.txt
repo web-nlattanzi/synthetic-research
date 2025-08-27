@@ -5,3 +5,4 @@ pandas
 openpyxl
 python-dotenv
 openai>=1.0.0
+supabase

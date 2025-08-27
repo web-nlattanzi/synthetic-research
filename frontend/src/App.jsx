@@ -1,109 +1,123 @@
-import { useState } from "react";
+import React, { useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
+import { Settings, Users, MessageSquare, Play } from 'lucide-react';
+import AudienceBuilder from './components/AudienceBuilder';
+import QuestionBuilder from './components/QuestionBuilder';
+import RunStatus from './components/RunStatus';
 
-/* ---------- Simple Box wrapper ---------- */
-const boxStyle = { border: "1px solid #ddd", borderRadius: 12, padding: 16, marginTop: 12, background: "#fff" };
-function Box({ children }) {
-  return <div style={boxStyle}>{children}</div>;
-}
-
-/* ============================================================================== */
-/*                           Synthetic Research Frontend                           */
-/* ============================================================================== */
 export default function App() {
-  /* Tabs */
-  const [activeTab, setActiveTab] = useState("audience"); // audience | questions | run
+  // Tabs
+  const [activeTab, setActiveTab] = useState('audience');
 
-  /* Core inputs */
-  const [apiUrl, setApiUrl] = useState("");
-  const [researchType, setResearchType] = useState("qual"); // "qual" or "quant"
-  const [nRespondents, setNRespondents] = useState(10);
+  // Core inputs
+  const [apiUrl, setApiUrl] = useState('');
+  const [researchType, setResearchType] = useState('qual');
+  const [nRespondents, setNRespondents] = useState(25);
 
-  /* Audience: freeform + builder */
-  const [audMode, setAudMode] = useState("freeform"); // "freeform" | "builder"
-  const [audienceDescription, setAudienceDescription] = useState("");
+  // Audience: freeform + builder
+  const [audMode, setAudMode] = useState('freeform');
+  const [audienceDescription, setAudienceDescription] = useState('');
+  const [age, setAge] = useState('');
+  const [gender, setGender] = useState('');
+  const [location, setLocation] = useState('');
+  const [income, setIncome] = useState('');
+  const [behavior, setBehavior] = useState('');
+  const [attitudes, setAttitudes] = useState('');
 
-  const [age, setAge] = useState("");
-  const [gender, setGender] = useState("");
-  const [location, setLocation] = useState("");
-  const [income, setIncome] = useState("");
-  const [behavior, setBehavior] = useState("");
-  const [attitudes, setAttitudes] = useState("");
+  // Questions - now structured
+  const [questions, setQuestions] = useState([
+    {
+      id: uuidv4(),
+      q: 'What motivates you to choose one coffee brand over another?',
+      type: 'open',
+      options: [],
+      prompt: ''
+    },
+    {
+      id: uuidv4(),
+      q: 'How often do you purchase coffee?',
+      type: 'single',
+      options: ['Daily', 'Weekly', 'Monthly', 'Rarely'],
+      prompt: ''
+    }
+  ]);
 
-  /* Questions */
-  const [questionsText, setQuestionsText] = useState(
-    "What motivates you to choose one coffee brand over another?\nDescribe your ideal coffee experience."
-  );
-
-  /* Run state */
+  // Run state
   const [runId, setRunId] = useState(null);
-  const [runStatus, setRunStatus] = useState(null); // queued | running | succeeded | failed | error(...)
+  const [runStatus, setRunStatus] = useState(null);
   const [downloadUrl, setDownloadUrl] = useState(null);
-  const [lastError, setLastError] = useState("");
+  const [lastError, setLastError] = useState('');
 
-  /* Helpers */
-  const baseUrl = () => apiUrl.replace(/\/$/, "");
+  // Helpers
+  const baseUrl = () => apiUrl.replace(/\/$/, '');
 
-  const applyBuilderToDescription = () => {
-    const bullets = [];
-    if (age.trim()) bullets.push(`• Age: ${age}`);
-    if (gender.trim()) bullets.push(`• Gender: ${gender}`);
-    if (location.trim()) bullets.push(`• Location: ${location}`);
-    if (income.trim()) bullets.push(`• Income: ${income}`);
-    if (behavior.trim()) bullets.push(`• Category behavior: ${behavior}`);
-    if (attitudes.trim()) bullets.push(`• Attitudes: ${attitudes}`);
-    setAudienceDescription(bullets.join("\n"));
-  };
-
-  const parseQuestions = () =>
-    questionsText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-  /* ---------------------------- Backend Calls ---------------------------- */
+  // Backend Calls
   async function createRun() {
-    setLastError("");
+    setLastError('');
     const base = baseUrl();
-    if (!base) return alert("Please paste your backend API URL (no trailing slash).");
-    if (!audienceDescription.trim()) return alert("Please provide an audience description.");
-    const qs = parseQuestions();
-    if (qs.length === 0) return alert("Please provide at least one question.");
+    if (!base) {
+      alert('Please paste your backend API URL (no trailing slash).');
+      return;
+    }
+    if (!audienceDescription.trim()) {
+      alert('Please provide an audience description.');
+      return;
+    }
+    if (questions.length === 0) {
+      alert('Please provide at least one question.');
+      return;
+    }
     const n = Number(nRespondents || 1);
-    if (isNaN(n) || n < 1) return alert("Respondents must be a positive number.");
+    if (isNaN(n) || n < 1) {
+      alert('Respondents must be a positive number.');
+      return;
+    }
+
+    // Validate questions
+    for (const q of questions) {
+      if (!q.q.trim()) {
+        alert('All questions must have text.');
+        return;
+      }
+      if ((q.type === 'single' || q.type === 'multi') && (!q.options || q.options.length === 0)) {
+        alert(`Question "${q.q}" needs at least one option.`);
+        return;
+      }
+    }
 
     setRunId(null);
-    setRunStatus("queued");
+    setRunStatus('queued');
     setDownloadUrl(null);
 
     try {
       const res = await fetch(`${base}/api/runs`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          audience: audienceDescription,      // <-- matches backend
-          research_type: researchType,        // <-- matches backend
-          questions: qs,                      // <-- array of strings
-          n_respondents: n                    // <-- number
+          segment_text: audienceDescription,
+          research_type: researchType,
+          questions: questions,
+          n_respondents: n
         }),
       });
 
       if (!res.ok) {
-        const t = await res.text().catch(() => "");
+        const t = await res.text().catch(() => '');
         setRunStatus(`error (${res.status})`);
-        setLastError(t || "Create run failed.");
-        alert(`Create run failed: ${res.status}\n${t || "See backend logs for details."}`);
+        setLastError(t || 'Create run failed.');
+        alert(`Create run failed: ${res.status}\n${t || 'See backend logs for details.'}`);
         return;
       }
 
       const j = await res.json();
       setRunId(j.run_id);
-      setRunStatus("running");
-      setActiveTab("run");
+      setRunStatus('running');
+      setActiveTab('run');
       pollStatus(j.run_id);
     } catch (e) {
-      setRunStatus("error (network)");
+      setRunStatus('error (network)');
       setLastError(String(e));
-      alert("Network error creating run. Check API URL / Port 8000 visibility.");
+      alert('Network error creating run. Check API URL / Port 8000 visibility.');
     }
   }
 
@@ -114,217 +128,223 @@ export default function App() {
         const r = await fetch(`${base}/api/runs/${id}`);
         if (!r.ok) {
           if (r.status === 404) {
-            setRunStatus("error (not found)");
+            setRunStatus('error (not found)');
             clearInterval(timer);
           }
           return;
         }
         const j = await r.json();
         setRunStatus(j.status);
-        if (j.status === "succeeded" && j.download_url) {
+        if (j.status === 'succeeded' && j.download_url) {
           setDownloadUrl(`${base}${j.download_url}`);
           clearInterval(timer);
-        } else if (j.status === "failed") {
-          setLastError(j.message || "Background job failed.");
+        } else if (j.status === 'failed') {
+          setLastError(j.error_message || 'Background job failed.');
           clearInterval(timer);
         }
       } catch {
-        setRunStatus("error (poll)");
+        setRunStatus('error (poll)');
         clearInterval(timer);
       }
-    }, 1000);
+    }, 2000);
   }
 
-  /* ---------------------------------- UI --------------------------------- */
-  return (
-    <div
-      style={{
-        fontFamily: "Inter, system-ui, Arial, sans-serif",
-        minHeight: "100vh",
-        background: "#f5f6f7",
-        padding: 20,
-        color: "#111",
-      }}
-    >
-      {/* horizontally centered container */}
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <h1 style={{ textAlign: "center" }}>Synthetic Research Tool</h1>
+  const handleDownload = () => {
+    if (downloadUrl) {
+      window.open(downloadUrl, '_blank');
+    }
+  };
 
-        {/* Tabs */}
-        <div style={{ display: "flex", marginBottom: 20, borderBottom: "2px solid #ddd" }}>
-          {["audience", "questions", "run"].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              style={{
-                flex: 1,
-                padding: "10px",
-                border: "none",
-                background: activeTab === tab ? "#fff" : "#eee",
-                borderBottom: activeTab === tab ? "2px solid #000" : "none",
-                cursor: "pointer",
-                fontWeight: activeTab === tab ? "bold" : "normal",
-              }}
-            >
-              {tab === "audience" ? "Define Audience" : tab === "questions" ? "Input Questions" : "Run & Export"}
-            </button>
-          ))}
+  const handlePreview = async () => {
+    if (!runId) return;
+    
+    try {
+      const base = baseUrl();
+      const res = await fetch(`${base}/api/runs/${runId}/preview`);
+      if (res.ok) {
+        const data = await res.json();
+        console.log('Preview data:', data);
+        // Could open a modal or navigate to a preview page
+        alert('Preview feature coming soon! Check console for data.');
+      }
+    } catch (e) {
+      console.error('Preview error:', e);
+    }
+  };
+
+  const tabs = [
+    { id: 'audience', label: 'Define Audience', icon: Users },
+    { id: 'questions', label: 'Research Questions', icon: MessageSquare },
+    { id: 'run', label: 'Run & Export', icon: Play }
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-6xl mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Synthetic Research Tool
+          </h1>
+          <p className="text-gray-600">
+            Generate realistic survey responses from AI-powered synthetic respondents
+          </p>
         </div>
 
-        {/* Define Audience */}
-        {activeTab === "audience" && (
-          <>
-            <Box>
-              <h3>API URL</h3>
+        {/* API Configuration */}
+        <div className="card mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <Settings className="w-5 h-5 text-gray-600" />
+            <h3 className="text-lg font-semibold text-gray-900">API Configuration</h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Backend API URL
+              </label>
               <input
-                style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
+                type="url"
                 value={apiUrl}
                 onChange={(e) => setApiUrl(e.target.value)}
-                placeholder="https://<hash>-8000.app.github.dev (no trailing slash)"
+                placeholder="https://your-backend-url.com (no trailing slash)"
+                className="input-field"
               />
-            </Box>
-
-            <Box>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <button
-                  onClick={() => setAudMode("freeform")}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 8,
-                    border: "1px solid #ddd",
-                    background: audMode === "freeform" ? "#111" : "#fff",
-                    color: audMode === "freeform" ? "#fff" : "#111",
-                    cursor: "pointer",
-                  }}
-                >
-                  Freeform
-                </button>
-                <button
-                  onClick={() => setAudMode("builder")}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 8,
-                    border: "1px solid #ddd",
-                    background: audMode === "builder" ? "#111" : "#fff",
-                    color: audMode === "builder" ? "#fff" : "#111",
-                    cursor: "pointer",
-                  }}
-                >
-                  Audience Builder
-                </button>
-              </div>
-
-              {audMode === "freeform" ? (
-                <textarea
-                  style={{ width: "100%", minHeight: 160, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
-                  value={audienceDescription}
-                  onChange={(e) => setAudienceDescription(e.target.value)}
-                  placeholder="Describe your audience… (bullets work great)"
-                />
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                  <div>
-                    <h3>Builder</h3>
-                    <input placeholder="Age" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={age} onChange={(e) => setAge(e.target.value)} />
-                    <input placeholder="Gender" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={gender} onChange={(e) => setGender(e.target.value)} />
-                    <input placeholder="Location" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={location} onChange={(e) => setLocation(e.target.value)} />
-                    <input placeholder="Income" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={income} onChange={(e) => setIncome(e.target.value)} />
-                    <input placeholder="Category behavior" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={behavior} onChange={(e) => setBehavior(e.target.value)} />
-                    <input placeholder="Attitudes" style={{ width: "100%", padding: 8, marginBottom: 8 }} value={attitudes} onChange={(e) => setAttitudes(e.target.value)} />
-                    <button onClick={applyBuilderToDescription}>Apply to Audience Description</button>
-                  </div>
-                  <div>
-                    <h3>Preview</h3>
-                    <textarea
-                      style={{ width: "100%", minHeight: 160, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
-                      value={audienceDescription}
-                      onChange={(e) => setAudienceDescription(e.target.value)}
-                    />
-                  </div>
-                </div>
-              )}
-            </Box>
-
-            <Box>
-              <h3>Research Settings</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <label><strong>Research Type</strong></label>
-                  <select
-                    style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
-                    value={researchType}
-                    onChange={(e) => setResearchType(e.target.value)}
-                  >
-                    <option value="qual">Qual (verbatims + themes)</option>
-                    <option value="quant">Quant (Excel + summary)</option>
-                  </select>
-                </div>
-                <div>
-                  <label><strong>Number of Respondents</strong></label>
-                  <input
-                    type="number"
-                    min={1}
-                    style={{ width: "100%", padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
-                    value={nRespondents}
-                    onChange={(e) => setNRespondents(Math.max(1, Number(e.target.value || 1)))}
-                  />
-                </div>
-              </div>
-            </Box>
-          </>
-        )}
-
-        {/* Input Questions */}
-        {activeTab === "questions" && (
-          <Box>
-            <h3>Input Questions</h3>
-            <textarea
-              style={{ width: "100%", minHeight: 200, padding: 8, background: "#fff", color: "#111", border: "1px solid #ccc" }}
-              value={questionsText}
-              onChange={(e) => setQuestionsText(e.target.value)}
-              placeholder={
-                researchType === "qual"
-                  ? "Enter one open-ended question per line…"
-                  : "Paste survey logic or enter one question per line…"
-              }
-            />
-          </Box>
-        )}
-
-        {/* Run & Export */}
-        {activeTab === "run" && (
-          <>
-            <Box>
-              <h3>Preview</h3>
-              <p><strong>Audience</strong></p>
-              <pre style={{ background: "#f4f4f4", padding: 10, whiteSpace: "pre-wrap" }}>
-                {audienceDescription || "(none)"}
-              </pre>
-              <p><strong>Questions</strong></p>
-              <pre style={{ background: "#f4f4f4", padding: 10, whiteSpace: "pre-wrap" }}>
-                {questionsText || "(none)"}
-              </pre>
-              <p><strong>Research Type:</strong> {researchType}</p>
-              <p><strong>Respondents:</strong> {nRespondents}</p>
-              <p><strong>Status:</strong> {runStatus || "(idle)"} {runId ? `(run_id: ${runId})` : ""}</p>
-              {lastError && <p style={{ color: "#b00020" }}><strong>Error:</strong> {lastError}</p>}
-            </Box>
-
-            <Box>
-              <button style={{ padding: "10px 20px", marginRight: 10 }} onClick={createRun}>
-                {runStatus ? `Generate (status: ${runStatus})` : "Generate"}
-              </button>
-              <button
-                style={{ padding: "10px 20px", opacity: downloadUrl ? 1 : 0.6, cursor: downloadUrl ? "pointer" : "not-allowed" }}
-                disabled={!downloadUrl}
-                onClick={() => (window.location.href = downloadUrl)}
-                title={downloadUrl ? "Download Excel" : "Not ready yet"}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Research Type
+              </label>
+              <select
+                value={researchType}
+                onChange={(e) => setResearchType(e.target.value)}
+                className="input-field"
               >
-                {downloadUrl ? "Download Results" : "Download Results (not ready)"}
+                <option value="qual">Qualitative</option>
+                <option value="quant">Quantitative</option>
+                <option value="creative">Creative</option>
+              </select>
+            </div>
+          </div>
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Number of Respondents
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={nRespondents}
+              onChange={(e) => setNRespondents(Math.max(1, Number(e.target.value || 1)))}
+              className="input-field w-32"
+            />
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="mb-8">
+          <div className="border-b border-gray-200">
+            <nav className="flex space-x-8">
+              {tabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                      activeTab === tab.id
+                        ? 'border-primary-500 text-primary-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        <div className="mb-8">
+          {activeTab === 'audience' && (
+            <AudienceBuilder
+              audMode={audMode}
+              setAudMode={setAudMode}
+              audienceDescription={audienceDescription}
+              setAudienceDescription={setAudienceDescription}
+              age={age}
+              setAge={setAge}
+              gender={gender}
+              setGender={setGender}
+              location={location}
+              setLocation={setLocation}
+              income={income}
+              setIncome={setIncome}
+              behavior={behavior}
+              setBehavior={setBehavior}
+              attitudes={attitudes}
+              setAttitudes={setAttitudes}
+            />
+          )}
+
+          {activeTab === 'questions' && (
+            <QuestionBuilder
+              questions={questions}
+              setQuestions={setQuestions}
+            />
+          )}
+
+          {activeTab === 'run' && (
+            <RunStatus
+              runId={runId}
+              runStatus={runStatus}
+              downloadUrl={downloadUrl}
+              lastError={lastError}
+              audienceDescription={audienceDescription}
+              questions={questions}
+              researchType={researchType}
+              nRespondents={nRespondents}
+              onDownload={handleDownload}
+              onPreview={handlePreview}
+            />
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="card">
+          <div className="flex justify-between items-center">
+            <div className="text-sm text-gray-600">
+              {activeTab === 'audience' && 'Define your target audience to get started'}
+              {activeTab === 'questions' && `${questions.length} questions configured`}
+              {activeTab === 'run' && (runStatus ? `Status: ${runStatus}` : 'Ready to generate synthetic responses')}
+            </div>
+            <div className="flex gap-3">
+              {activeTab !== 'run' && (
+                <button
+                  onClick={() => {
+                    const nextTab = activeTab === 'audience' ? 'questions' : 'run';
+                    setActiveTab(nextTab);
+                  }}
+                  className="btn-secondary"
+                >
+                  Next Step
+                </button>
+              )}
+              <button
+                onClick={createRun}
+                disabled={runStatus === 'running' || runStatus === 'queued'}
+                className="btn-primary flex items-center gap-2"
+              >
+                <Play className="w-4 h-4" />
+                {runStatus === 'running' || runStatus === 'queued' 
+                  ? 'Generating...' 
+                  : 'Generate Responses'
+                }
               </button>
-            </Box>
-          </>
-        )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
